@@ -1,25 +1,35 @@
 import { GraphqlQueryError } from "@shopify/shopify-api";
 import shopify from "../config/shopify.js";
-import { Product } from "../models/Product.models.js";
 
-;
-
-const CREATE_PRODUCT_MUTATION = `mutation CreateProduct($input: ProductCreateInput!) {
-  productCreate(product: $input) {
-    product {
-      id
-      title
-      status
-      variants(first: 1) {
-        nodes {
-          id
-          price
+const GET_PRODUCTS_QUERY = `query GetProducts($first: Int!, $after: String, $query: String) {
+  products(first: $first, after: $after, query: $query) {
+    edges {
+      cursor
+      node {
+        id
+        title
+        status
+        handle
+        vendor
+        productType
+        featuredImage {
+          url
         }
+        variants(first: 1) {
+          nodes {
+            id
+            title
+            price
+            sku
+            inventoryQuantity
+          }
+        }
+        createdAt
       }
     }
-    userErrors {
-      field
-      message
+    pageInfo {
+      hasNextPage
+      endCursor
     }
   }
 }`;
