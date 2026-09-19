@@ -45,18 +45,16 @@ export const getAllProduct = async (req, res) => {
     const after = req.query.cursor || null;
     const status = req.query.status;
 
-    const variables = { first: limit, after };
-    if (status) {
-      variables.query = `status:${status.toUpperCase()}`;
-    }
+    const variables = {
+      first: limit,
+      after,
+      query: status ? `status:${status.toUpperCase()}` : null,
+    };
 
     const client = new shopify.api.clients.Graphql({ session });
-    const response = await client.query({
-      data: GET_PRODUCTS_QUERY,
-      variables,
-    });
+    const response = await client.request(GET_PRODUCTS_QUERY, { variables });
 
-    const { products } = response.body.data;
+    const { products } = response.data;
 
     return res.status(200).json({
       data: {
