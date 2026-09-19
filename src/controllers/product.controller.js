@@ -2,6 +2,8 @@ import { GraphqlQueryError } from "@shopify/shopify-api";
 import shopify from "../config/shopify.js";
 import { Product } from "../models/Product.models.js";
 
+;
+
 const CREATE_PRODUCT_MUTATION = `mutation CreateProduct($input: ProductCreateInput!) {
   productCreate(product: $input) {
     product {
@@ -22,43 +24,36 @@ const CREATE_PRODUCT_MUTATION = `mutation CreateProduct($input: ProductCreateInp
   }
 }`;
 
-export const createProduct = async (req, res) => {
+export const getAllProduct = async (req, res) => {
   try {
     const session = res.locals.shopify.session;
 
-    const { title, description, price, status } = req.body ?? {};
+    let limit = parseInt(req.query.limit, 10);
+    if (Number.isNaN(limit) || limit < 1) limit = 10;
+    limit = Math.min(limit, 250);
 
-    if (!title) {
-      return res.status(400).json({ error: "title is required" });
+    const after = req.query.cursor || null;
+    const status = req.query.status;
+
+    const variables = { first: limit, after };
+    if (status) {
+      variables.query = `status:${status.toUpperCase()}`;
     }
-
-    const input = { title };
-    if (description) input.descriptionHtml = description;
-    if (price) input.variants = [{ price: String(price) }];
-    if (status) input.status = status;
 
     const client = new shopify.api.clients.Graphql({ session });
     const response = await client.query({
-      data: CREATE_PRODUCT_MUTATION,
-      variables: { input },
+      data: GET_PRODUCTS_QUERY,
+      variables,
     });
 
-    const { productCreate } = response.body.data;
+    const { products } = response.body.data;
 
-    if (productCreate.userErrors.length > 0) {
-      return res.status(400).json({ userErrors: productCreate.userErrors });
-    }
-
-    const product = await Product.create({
-      title,
-      description: description ?? "",
-      price: Number(productCreate.product.variants.nodes[0]?.price) || 0,
-      status: status ?? "ACTIVE",
-      shopId: session.shop,
-      shopifyProductId: productCreate.product.id.split("/").pop(),
+    return res.status(200).json({
+      data: {
+        products: products.edges.map((edge) => edge.node),
+        pageInfo: products.pageInfo,
+      },
     });
-
-    return res.status(201).json({ data: product });
   } catch (error) {
     if (
       error instanceof GraphqlQueryError &&
@@ -66,7 +61,7 @@ export const createProduct = async (req, res) => {
     ) {
       return res.status(400).json({ userErrors: error.response.body.errors });
     }
-    console.error("Error creating product:", error);
-    return res.status(500).json({ error: "Failed to create product" });
+    console.error("Error fetching products:", error);
+    return res.status(500).json({ error: "Failed to fetch products" });
   }
 };
