@@ -34,6 +34,57 @@ const GET_PRODUCTS_QUERY = `query GetProducts($first: Int!, $after: String, $que
   }
 }`;
 
+const GET_PRODUCT_QUERY = `query GetProduct($id: ID!) {
+  product(id: $id) {
+    id
+    title
+    status
+    handle
+    vendor
+    productType
+    featuredImage {
+      url
+    }
+    variants(first: 1) {
+      nodes {
+        id
+        title
+        price
+        sku
+        inventoryQuantity
+      }
+    }
+    createdAt
+  }
+}`;
+
+export const getProduct = async (req, res) => {
+  try {
+    const session = res.locals.shopify.session;
+
+    const id = req.params.id;
+    const variables = { id: `gid://shopify/Product/${id}` };
+
+    const client = new shopify.api.clients.Graphql({ session });
+    const response = await client.request(GET_PRODUCT_QUERY, { variables });
+
+    const { product } = response.data;
+
+    return res.status(200).json({
+      data: { product },
+    });
+  } catch (error) {
+    if (
+      error instanceof GraphqlQueryError &&
+      error.response?.body?.errors?.length
+    ) {
+      return res.status(400).json({ userErrors: error.response.body.errors });
+    }
+    console.error("Error fetching product:", error);
+    return res.status(500).json({ error: "Failed to fetch product" });
+  }
+};
+
 export const getAllProduct = async (req, res) => {
   try {
     const session = res.locals.shopify.session;
