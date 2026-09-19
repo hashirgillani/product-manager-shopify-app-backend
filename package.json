@@ -1,0 +1,26 @@
+{
+  "name": "product-manager-backend",
+  "version": "1.0.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": ">=16.13.0"
+  },
+  "scripts": {
+    "debug": "node --inspect-brk src/index.js",
+    "dev": "cross-env NODE_ENV=development nodemon src/index.js",
+    "serve": "cross-env NODE_ENV=production node src/index.js"
+  },
+  "dependencies": {
+    "@shopify/shopify-app-express": "^5.0.8",
+    "@shopify/shopify-app-session-storage-sqlite": "^4.0.8",
+    "cors": "^2.8.5",
+    "cross-env": "^7.0.3",
+    "dotenv": "^18.0.0",
+    "mongoose": "^9.10.1"
+  },
+  "devDependencies": {
+    "nodemon": "^2.0.15"
+  }
+}
