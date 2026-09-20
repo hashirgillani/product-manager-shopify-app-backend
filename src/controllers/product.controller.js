@@ -1,5 +1,4 @@
 import { GraphqlQueryError } from "@shopify/shopify-api";
-import mongoose from "mongoose";
 import shopify from "../config/shopify.js";
 import { Product } from "../models/Product.models.js";
 import { ProductLog } from "../models/ProductLog.models.js";
@@ -205,17 +204,17 @@ export const getProductLogs = async (req, res) => {
     const { shop } = res.locals.shopify.session;
 
     let limit = parseInt(req.query.limit, 10);
-    if (Number.isNaN(limit) || limit < 1) limit = 20;
+    if (Number.isNaN(limit) || limit < 1) limit = 10;
     limit = Math.min(limit, 100);
 
-    const query = { shopId: shop };
-    const cursor = req.query.cursor;
-    if (cursor && mongoose.Types.ObjectId.isValid(cursor)) {
-      query._id = { $lt: new mongoose.Types.ObjectId(cursor) };
-    }
+    let page = parseInt(req.query.page, 10);
+    if (Number.isNaN(page) || page < 1) page = 1;
 
-    const logs = await ProductLog.find(query)
+    const filter = { shopId: shop };
+    const total = await ProductLog.countDocuments(filter);
+    const logs = await ProductLog.find(filter)
       .sort({ createdAt: -1, _id: -1 })
+      .skip((page - 1) * limit)
       .limit(limit)
       .lean();
 
@@ -223,8 +222,10 @@ export const getProductLogs = async (req, res) => {
       data: {
         logs,
         pageInfo: {
-          hasNextPage: logs.length === limit,
-          nextCursor: logs.length ? String(logs[logs.length - 1]._id) : null,
+          page,
+          limit,
+          total,
+          totalPages: Math.ceil(total / limit),
         },
       },
     });
@@ -492,7 +493,25 @@ export const updateProduct = async (req, res) => {
       { upsert: true, returnDocument: "after" }
     );
 
-    const changes = buildChanges(req.body, beforeProduct);
+    const mediaChanges = [];
+    for (const item of removedMedia) {
+      mediaChanges.push({
+        field: "media",
+        label: "Image removed",
+        before: item.url || null,
+        after: null,
+      });
+    }
+    for (const url of newUrls) {
+      mediaChanges.push({
+        field: "media",
+        label: "Image added",
+        before: null,
+        after: url,
+      });
+    }
+
+    const changes = [...buildChanges(req.body, beforeProduct), ...mediaChanges];
 
     if (changes.length) {
       try {
