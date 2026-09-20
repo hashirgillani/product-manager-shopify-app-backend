@@ -15,6 +15,8 @@ const GET_PRODUCTS_QUERY = `query GetProducts($first: Int!, $after: String, $que
         handle
         vendor
         productType
+        descriptionHtml
+        tags
         seo {
           title
           description
@@ -104,6 +106,8 @@ export const getProduct = async (req, res) => {
 
     const { product } = response.data;
 
+    seedProductSnapshot({ shopId: session.shop, product }).catch(() => {});
+
     return res.status(200).json({
       data: { product },
     });
@@ -181,6 +185,32 @@ const FIELD_DEFS = {
 const materialize = (value) =>
   value === null || value === undefined ? "" : String(value).trim();
 
+const snapshotFieldsFromGraphQL = (product) => ({
+  title: product?.title ?? "",
+  description: product?.descriptionHtml ?? "",
+  tags: Array.isArray(product?.tags)
+    ? product.tags.join(", ")
+    : String(product?.tags ?? ""),
+  vendor: product?.vendor ?? "",
+  productType: product?.productType ?? "",
+  handle: product?.handle ?? "",
+  price: Number(product?.variants?.nodes?.[0]?.price ?? 0),
+  featuredImage: product?.featuredImage?.url ?? "",
+  media: (product?.media?.nodes ?? [])
+    .map((node) => node?.image?.url ?? "")
+    .filter(Boolean),
+  status: String(product?.status ?? "ACTIVE").toUpperCase(),
+});
+
+const seedProductSnapshot = async ({ shopId, product }) => {
+  if (!product?.id) return;
+  await Product.updateOne(
+    { shopId, shopifyProductId: product.id },
+    { $set: snapshotFieldsFromGraphQL(product) },
+    { upsert: true }
+  );
+};
+
 const buildChanges = (body, beforeProduct) => {
   const changes = [];
   for (const key of Object.keys(FIELD_DEFS)) {
@@ -235,6 +265,13 @@ export const getProductLogs = async (req, res) => {
   }
 };
 
+const buildProductQuery = (status, search) => {
+  const parts = [];
+  if (status) parts.push(`status:${status.toUpperCase()}`);
+  if (search) parts.push(`title:*${search.replace(/"/g, "")}*`);
+  return parts.length ? parts.join(" AND ") : null;
+};
+
 export const getAllProduct = async (req, res) => {
   try {
     const session = res.locals.shopify.session;
@@ -245,17 +282,23 @@ export const getAllProduct = async (req, res) => {
 
     const after = req.query.cursor || null;
     const status = req.query.status;
+    const search = req.query.search;
 
     const variables = {
       first: limit,
       after,
-      query: status ? `status:${status.toUpperCase()}` : null,
+      query: buildProductQuery(status, search),
     };
 
     const client = new shopify.api.clients.Graphql({ session });
     const response = await client.request(GET_PRODUCTS_QUERY, { variables });
 
     const { products } = response.data;
+
+    const seed = products.edges.map((edge) =>
+      seedProductSnapshot({ shopId: session.shop, product: edge.node })
+    );
+    Promise.allSettled(seed);
 
     return res.status(200).json({
       data: {
@@ -480,6 +523,9 @@ export const updateProduct = async (req, res) => {
         $set: {
           title: title ?? "",
           description: body_html ?? "",
+          tags: tags ?? "",
+          vendor: vendor ?? "",
+          productType: productType ?? "",
           handle: handle ?? "",
           seoTitle: seoTitle ?? "",
           seoDescription: seoDescription ?? "",
@@ -520,6 +566,7 @@ export const updateProduct = async (req, res) => {
           shopifyProductId: productId,
           productId: req.params.id,
           productTitle: title ?? beforeProduct?.title ?? "",
+          source: "app",
           changes,
         });
       } catch (logError) {

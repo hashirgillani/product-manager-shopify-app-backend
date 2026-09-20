@@ -39,6 +39,16 @@ const ProductLogSchema = mongoose.Schema(
         },
       },
     ],
+    source: {
+      type: String,
+      enum: ["app", "shopify"],
+      default: "app",
+    },
+    webhookId: {
+      type: String,
+      sparse: true,
+      index: true,
+    },
   },
   { timestamps: true }
 );

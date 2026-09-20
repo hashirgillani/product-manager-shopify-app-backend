@@ -16,12 +16,13 @@ app.use(
   })
 );
 
-app.use(express.json());
-
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
-app.use(authRouter);
 app.use(webhookRouter);
+
+app.use(express.json());
+
+app.use(authRouter);
 
 app.use("/api/*", validateAuthenticatedSession);
 app.use(productRouter);

@@ -11,6 +11,18 @@ const ProductSchema = mongoose.Schema(
       type: String,
       default: "",
     },
+    tags: {
+      type: String,
+      default: "",
+    },
+    vendor: {
+      type: String,
+      default: "",
+    },
+    productType: {
+      type: String,
+      default: "",
+    },
     price: {
       type: Number,
       default: 0,
@@ -37,7 +49,7 @@ const ProductSchema = mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ["ACTIVE", "ARCHIVED"],
+      enum: ["ACTIVE", "DRAFT", "ARCHIVED"],
       default: "ACTIVE",
     },
     shopId: {
