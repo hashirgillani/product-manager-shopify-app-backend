@@ -15,9 +15,25 @@ const ProductSchema = mongoose.Schema(
       type: Number,
       default: 0,
     },
-    featuredImage: {
-      type: String, 
+    handle: {
+      type: String,
       default: "",
+    },
+    seoTitle: {
+      type: String,
+      default: "",
+    },
+    seoDescription: {
+      type: String,
+      default: "",
+    },
+    featuredImage: {
+      type: String,
+      default: "",
+    },
+    media: {
+      type: [String],
+      default: [],
     },
     status: {
       type: String,

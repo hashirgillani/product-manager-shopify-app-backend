@@ -29,7 +29,14 @@ const uploadOnCloudinary = async (filepath) => {
 
 export const deleteFile = async (url) => {
   try {
-    const public_id = url.split("/").pop().split(".")[0];
+    const pathname = new URL(url).pathname;
+    const marker = "/upload/";
+    const markerIndex = pathname.indexOf(marker);
+    if (markerIndex === -1) return null;
+
+    let public_id = pathname.slice(markerIndex + marker.length);
+    public_id = public_id.replace(/^v\d+\//, "");
+    public_id = public_id.replace(/\.[^/.]+$/, "");
 
     const result = await cloudinary.uploader.destroy(public_id);
     console.log("Deleted:", result);

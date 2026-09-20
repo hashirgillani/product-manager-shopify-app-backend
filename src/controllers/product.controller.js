@@ -1,7 +1,7 @@
 import { GraphqlQueryError } from "@shopify/shopify-api";
 import shopify from "../config/shopify.js";
 import { Product } from "../models/Product.models.js";
-import uploadOnCloudinary from "../utils/cloudinary.js";
+import uploadOnCloudinary, { deleteFile } from "../utils/cloudinary.js";
 
 const GET_PRODUCTS_QUERY = `query GetProducts($first: Int!, $after: String, $query: String) {
   products(first: $first, after: $after, query: $query) {
@@ -14,8 +14,22 @@ const GET_PRODUCTS_QUERY = `query GetProducts($first: Int!, $after: String, $que
         handle
         vendor
         productType
+        seo {
+          title
+          description
+        }
         featuredImage {
           url
+        }
+        media(first: 10) {
+          nodes {
+            id
+            ... on MediaImage {
+              image {
+                url
+              }
+            }
+          }
         }
         variants(first: 1) {
           nodes {
@@ -44,8 +58,23 @@ const GET_PRODUCT_QUERY = `query GetProduct($id: ID!) {
     handle
     vendor
     productType
+    seo {
+      title
+      description
+    }
     featuredImage {
       url
+    }
+    media(first: 10) {
+      nodes {
+        id
+        alt
+        ... on MediaImage {
+          image {
+            url
+          }
+        }
+      }
     }
     variants(first: 1) {
       nodes {
@@ -147,6 +176,39 @@ const UPDATE_PRODUCT_QUERY = `mutation productUpdate(
   }
 }`;
 
+const DELETE_MEDIA_QUERY = `mutation productDeleteMedia($productId: ID!, $mediaIds: [ID!]!) {
+  productDeleteMedia(productId: $productId, mediaIds: $mediaIds) {
+    mediaUserErrors {
+      field
+      message
+    }
+  }
+}`;
+
+const REORDER_MEDIA_QUERY = `mutation productReorderMedia($id: ID!, $moves: [MoveInput!]!) {
+  productReorderMedia(id: $id, moves: $moves) {
+    job {
+      id
+    }
+    mediaUserErrors {
+      field
+      message
+    }
+  }
+}`;
+
+const getProductMedia = async (client, productId) => {
+  const response = await client.request(GET_PRODUCT_QUERY, {
+    variables: { id: productId },
+  });
+  const nodes = response.data.product?.media?.nodes ?? [];
+  return nodes
+    .map((node) => ({ id: node.id, url: node.image?.url ?? "" }))
+    .filter((item) => item.url);
+};
+
+const urlToIdMap = (items) => new Map(items.map((item) => [item.url, item.id]));
+
 export const updateProduct = async (req, res) => {
   const readGraphQLErrors = (error) => {
     const candidates = [
@@ -175,16 +237,51 @@ export const updateProduct = async (req, res) => {
       status,
       body_html,
       tags,
+      handle,
+      seoTitle,
+      seoDescription,
     } = req.body;
 
-    let featuredImageUrl = req.body.featuredImage;
+    const files = req.files ?? [];
+    const removedMedia = JSON.parse(req.body.removedMedia || "[]");
+    const mediaOrder = JSON.parse(req.body.mediaOrder || "[]");
+    const featuredImage = req.body.featuredImage || "";
 
-    if (req.file) {
-      const uploaded = await uploadOnCloudinary(req.file.path);
+    const newUrls = [];
+    for (const file of files) {
+      const uploaded = await uploadOnCloudinary(file.path);
       if (!uploaded) {
         return res.status(500).json({ error: "Failed to upload image" });
       }
-      featuredImageUrl = uploaded.secure_url ?? uploaded.url;
+      newUrls.push(uploaded.secure_url ?? uploaded.url);
+    }
+
+    const currentMedia = await getProductMedia(client, productId);
+    const currentUrlToId = urlToIdMap(currentMedia);
+
+    const removedIds = removedMedia
+      .map((item) => currentUrlToId.get(item.url))
+      .filter(Boolean);
+
+    if (removedIds.length) {
+      for (const item of removedMedia) {
+        const url = item.url;
+        if (url) {
+          try {
+            await deleteFile(url);
+          } catch {
+            // best-effort cleanup on Cloudinary
+          }
+        }
+      }
+
+      const deleteResponse = await client.request(DELETE_MEDIA_QUERY, {
+        variables: { productId, mediaIds: removedIds },
+      });
+      const deleteErrors = deleteResponse.data.productDeleteMedia.mediaUserErrors;
+      if (deleteErrors.length) {
+        return res.status(400).json({ userErrors: deleteErrors });
+      }
     }
 
     const productInput = { id: productId };
@@ -193,6 +290,15 @@ export const updateProduct = async (req, res) => {
     if (productType !== undefined) productInput.productType = productType;
     if (status !== undefined) productInput.status = status.toUpperCase();
     if (body_html !== undefined) productInput.descriptionHtml = body_html;
+    if (handle !== undefined) {
+      productInput.handle = handle;
+      productInput.redirectNewHandle = true;
+    }
+    if (seoTitle !== undefined || seoDescription !== undefined) {
+      productInput.seo = {};
+      if (seoTitle !== undefined) productInput.seo.title = seoTitle;
+      if (seoDescription !== undefined) productInput.seo.description = seoDescription;
+    }
     if (tags !== undefined) {
       productInput.tags = tags
         .split(",")
@@ -201,34 +307,57 @@ export const updateProduct = async (req, res) => {
     }
 
     const variables = { product: productInput };
-    if (featuredImageUrl) {
-      variables.media = [
-        {
-          mediaContentType: "IMAGE",
-          originalSource: featuredImageUrl,
-          alt: title ?? "",
-        },
-      ];
+    if (newUrls.length) {
+      variables.media = newUrls.map((url) => ({
+        mediaContentType: "IMAGE",
+        originalSource: url,
+        alt: title ?? "",
+      }));
     }
 
     const updateResponse = await client.request(UPDATE_PRODUCT_QUERY, {
       variables,
     });
-
     const updateErrors = updateResponse.data.productUpdate.userErrors;
     if (updateErrors.length) {
       return res.status(400).json({ userErrors: updateErrors });
     }
 
+    const refreshedMedia = await getProductMedia(client, productId);
+    const refreshedUrlToId = urlToIdMap(refreshedMedia);
+
+    const desiredOrder = [...mediaOrder, ...newUrls];
+    const moves = desiredOrder
+      .map((url, index) => ({
+        id: refreshedUrlToId.get(url),
+        newPosition: String(index),
+      }))
+      .filter((move) => Boolean(move.id));
+
+    if (moves.length > 1) {
+      const reorderResponse = await client.request(REORDER_MEDIA_QUERY, {
+        variables: { id: productId, moves },
+      });
+      const reorderErrors = reorderResponse.data.productReorderMedia.mediaUserErrors;
+      if (reorderErrors.length) {
+        return res.status(400).json({ userErrors: reorderErrors });
+      }
+    }
+
+    const featured = featuredImage || desiredOrder[0] || "";
     const updated = await Product.findOneAndUpdate(
       { shopifyProductId: productId },
       {
         $set: {
           title: title ?? "",
           description: body_html ?? "",
+          handle: handle ?? "",
+          seoTitle: seoTitle ?? "",
+          seoDescription: seoDescription ?? "",
           price:
             req.body.price !== undefined ? Number(req.body.price) : 0,
-          featuredImage: featuredImageUrl ?? "",
+          featuredImage: featured,
+          media: desiredOrder,
           status: status ? status.toUpperCase() : "ACTIVE",
         },
       },

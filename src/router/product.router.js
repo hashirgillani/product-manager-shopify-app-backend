@@ -12,6 +12,6 @@ router.get("/api/products", getAllProduct);
 router.get("/api/products/:id", getProduct);
 router
   .route("/api/products/:id")
-  .patch(upload.single("featuredImage"), updateProduct);
+  .patch(upload.array("media", 10), updateProduct);
 
 export default router;
