@@ -1,6 +1,8 @@
 import { GraphqlQueryError } from "@shopify/shopify-api";
+import mongoose from "mongoose";
 import shopify from "../config/shopify.js";
 import { Product } from "../models/Product.models.js";
+import { ProductLog } from "../models/ProductLog.models.js";
 import uploadOnCloudinary, { deleteFile } from "../utils/cloudinary.js";
 
 const GET_PRODUCTS_QUERY = `query GetProducts($first: Int!, $after: String, $query: String) {
@@ -58,6 +60,8 @@ const GET_PRODUCT_QUERY = `query GetProduct($id: ID!) {
     handle
     vendor
     productType
+    descriptionHtml
+    tags
     seo {
       title
       description
@@ -113,6 +117,120 @@ export const getProduct = async (req, res) => {
     }
     console.error("Error fetching product:", error);
     return res.status(500).json({ error: "Failed to fetch product" });
+  }
+};
+
+const FIELD_DEFS = {
+  title: {
+    label: "Title",
+    before: (product) => product?.title ?? "",
+    after: (body) => body.title,
+  },
+  vendor: {
+    label: "Vendor",
+    before: (product) => product?.vendor ?? "",
+    after: (body) => body.vendor,
+  },
+  productType: {
+    label: "Product type",
+    before: (product) => product?.productType ?? "",
+    after: (body) => body.productType,
+  },
+  status: {
+    label: "Status",
+    before: (product) => materialize(product?.status),
+    after: (body) => materialize(body.status).toUpperCase(),
+  },
+  body_html: {
+    label: "Description",
+    before: (product) => product?.descriptionHtml ?? "",
+    after: (body) => body.body_html,
+  },
+  handle: {
+    label: "Handle",
+    before: (product) => product?.handle ?? "",
+    after: (body) => body.handle,
+  },
+  seoTitle: {
+    label: "SEO title",
+    before: (product) => product?.seo?.title ?? "",
+    after: (body) => body.seoTitle,
+  },
+  seoDescription: {
+    label: "SEO description",
+    before: (product) => product?.seo?.description ?? "",
+    after: (body) => body.seoDescription,
+  },
+  tags: {
+    label: "Tags",
+    before: (product) => (product?.tags ?? []).join(", "),
+    after: (body) =>
+      (body.tags ?? "")
+        .split(",")
+        .map((tag) => tag.trim())
+        .filter(Boolean)
+        .join(", "),
+  },
+  price: {
+    label: "Price",
+    before: (product) =>
+      String(Number(product?.variants?.nodes?.[0]?.price ?? 0)),
+    after: (body) => String(Number(body.price)),
+  },
+};
+
+const materialize = (value) =>
+  value === null || value === undefined ? "" : String(value).trim();
+
+const buildChanges = (body, beforeProduct) => {
+  const changes = [];
+  for (const key of Object.keys(FIELD_DEFS)) {
+    if (body[key] === undefined) continue;
+    const definition = FIELD_DEFS[key];
+    const before = materialize(definition.before(beforeProduct));
+    const after = materialize(definition.after(body));
+    if (before === after) continue;
+    changes.push({
+      field: key,
+      label: definition.label,
+      before: beforeProduct ? definition.before(beforeProduct) : null,
+      after: definition.after(body),
+    });
+  }
+  return changes;
+};
+
+export const getProductLogs = async (req, res) => {
+  try {
+    const { shop } = res.locals.shopify.session;
+
+    let limit = parseInt(req.query.limit, 10);
+    if (Number.isNaN(limit) || limit < 1) limit = 20;
+    limit = Math.min(limit, 100);
+
+    const query = { shopId: shop };
+    const cursor = req.query.cursor;
+    if (cursor && mongoose.Types.ObjectId.isValid(cursor)) {
+      query._id = { $lt: new mongoose.Types.ObjectId(cursor) };
+    }
+
+    const logs = await ProductLog.find(query)
+      .sort({ createdAt: -1, _id: -1 })
+      .limit(limit)
+      .lean();
+
+    return res.status(200).json({
+      data: {
+        logs,
+        pageInfo: {
+          hasNextPage: logs.length === limit,
+          nextCursor: logs.length ? String(logs[logs.length - 1]._id) : null,
+        },
+      },
+    });
+  } catch (error) {
+    console.error("Error fetching product logs:", error);
+    return res.status(500).json({ error: "Failed to fetch product logs" });
   }
 };
 
@@ -247,6 +365,16 @@ export const updateProduct = async (req, res) => {
     const mediaOrder = JSON.parse(req.body.mediaOrder || "[]");
     const featuredImage = req.body.featuredImage || "";
 
+    let beforeProduct = null;
+    try {
+      const beforeResponse = await client.request(GET_PRODUCT_QUERY, {
+        variables: { id: productId },
+      });
+      beforeProduct = beforeResponse.data.product;
+    } catch {
+      beforeProduct = null;
+    }
+
     const newUrls = [];
     for (const file of files) {
       const uploaded = await uploadOnCloudinary(file.path);
@@ -363,6 +491,22 @@ export const updateProduct = async (req, res) => {
       },
       { upsert: true, returnDocument: "after" }
     );
+
+    const changes = buildChanges(req.body, beforeProduct);
+
+    if (changes.length) {
+      try {
+        await ProductLog.create({
+          shopId: session.shop,
+          shopifyProductId: productId,
+          productId: req.params.id,
+          productTitle: title ?? beforeProduct?.title ?? "",
+          changes,
+        });
+      } catch (logError) {
+        console.error("Error saving product log:", logError);
+      }
+    }
 
     return res.status(200).json({
       data: { product: updated },
