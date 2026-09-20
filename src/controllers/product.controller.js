@@ -127,8 +127,11 @@ export const getAllProduct = async (req, res) => {
   }
 };
 
-const UPDATE_PRODUCT_QUERY = `mutation productUpdate($product: ProductInput!) {
-  productUpdate(product: $product) {
+const UPDATE_PRODUCT_QUERY = `mutation productUpdate(
+  $product: ProductUpdateInput!
+  $media: [CreateMediaInput!]
+) {
+  productUpdate(product: $product, media: $media) {
     product {
       id
       title
@@ -144,23 +147,22 @@ const UPDATE_PRODUCT_QUERY = `mutation productUpdate($product: ProductInput!) {
   }
 }`;
 
-const MEDIA_CREATE_QUERY = `mutation mediaCreate($productId: ID!, $media: [CreateMediaInput!]!) {
-  mediaCreate(productId: $productId, media: $media) {
-    media {
-      id
-      alt
-      image {
-        url
-      }
-    }
-    mediaUserErrors {
-      field
-      message
-    }
-  }
-}`;
-
 export const updateProduct = async (req, res) => {
+  const readGraphQLErrors = (error) => {
+    const candidates = [
+      error?.body?.errors,
+      error?.body,
+      error?.response?.body,
+    ];
+    for (const candidate of candidates) {
+      if (!candidate) continue;
+      if (Array.isArray(candidate?.graphQLErrors)) return candidate.graphQLErrors;
+      if (Array.isArray(candidate?.errors)) return candidate.errors;
+      if (Array.isArray(candidate)) return candidate;
+    }
+    return [];
+  };
+
   try {
     const session = res.locals.shopify.session;
     const productId = `gid://shopify/Product/${req.params.id}`;
@@ -190,7 +192,7 @@ export const updateProduct = async (req, res) => {
     if (vendor !== undefined) productInput.vendor = vendor;
     if (productType !== undefined) productInput.productType = productType;
     if (status !== undefined) productInput.status = status.toUpperCase();
-    if (body_html !== undefined) productInput.bodyHtml = body_html;
+    if (body_html !== undefined) productInput.descriptionHtml = body_html;
     if (tags !== undefined) {
       productInput.tags = tags
         .split(",")
@@ -198,33 +200,24 @@ export const updateProduct = async (req, res) => {
         .filter(Boolean);
     }
 
+    const variables = { product: productInput };
+    if (featuredImageUrl) {
+      variables.media = [
+        {
+          mediaContentType: "IMAGE",
+          originalSource: featuredImageUrl,
+          alt: title ?? "",
+        },
+      ];
+    }
+
     const updateResponse = await client.request(UPDATE_PRODUCT_QUERY, {
-      variables: { product: productInput },
+      variables,
     });
 
     const updateErrors = updateResponse.data.productUpdate.userErrors;
     if (updateErrors.length) {
       return res.status(400).json({ userErrors: updateErrors });
-    }
-
-    if (featuredImageUrl) {
-      const mediaResponse = await client.request(MEDIA_CREATE_QUERY, {
-        variables: {
-          productId,
-          media: [
-            {
-              mediaContentType: "IMAGE",
-              originalSource: featuredImageUrl,
-              alt: title ?? "",
-            },
-          ],
-        },
-      });
-
-      const mediaErrors = mediaResponse.data.mediaCreate.mediaUserErrors;
-      if (mediaErrors.length) {
-        return res.status(400).json({ userErrors: mediaErrors });
-      }
     }
 
     const updated = await Product.findOneAndUpdate(
@@ -239,18 +232,18 @@ export const updateProduct = async (req, res) => {
           status: status ? status.toUpperCase() : "ACTIVE",
         },
       },
-      { upsert: true, new: true }
+      { upsert: true, returnDocument: "after" }
     );
 
     return res.status(200).json({
       data: { product: updated },
     });
   } catch (error) {
-    if (
-      error instanceof GraphqlQueryError &&
-      error.response?.body?.errors?.length
-    ) {
-      return res.status(400).json({ userErrors: error.response.body.errors });
+    const graphQLErrors = readGraphQLErrors(error);
+    if (graphQLErrors.length) {
+      const messages = graphQLErrors.map((e) => e.message ?? e);
+      console.error("Shopify GraphQL errors:", messages);
+      return res.status(400).json({ userErrors: messages });
     }
     console.error("Error updating product:", error);
     return res.status(500).json({ error: "Failed to update product" });
