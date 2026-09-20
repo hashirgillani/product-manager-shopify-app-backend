@@ -31,6 +31,21 @@ const buildSnapshotFields = (payload) => {
 const stringify = (value) =>
   value === null || value === undefined ? "" : String(value).trim();
 
+const changesAreIdentical = (left, right) => {
+  if (left.length !== right.length) return false;
+  for (let i = 0; i < left.length; i++) {
+    if (
+      left[i].field !== right[i].field ||
+      left[i].label !== right[i].label ||
+      stringify(left[i].before) !== stringify(right[i].before) ||
+      stringify(left[i].after) !== stringify(right[i].after)
+    ) {
+      return false;
+    }
+  }
+  return true;
+};
+
 const buildWebhookChanges = (payload, snapshot) => {
   const changes = [];
   const next = buildSnapshotFields(payload);
@@ -113,15 +128,28 @@ export default {
 
         const changes = buildWebhookChanges(payload, snapshot);
         if (changes.length) {
-          await ProductLog.create({
+          const recentAppLog = await ProductLog.findOne({
             shopId: shop,
             shopifyProductId,
-            productId: String(payload.id),
-            productTitle: payload.title ?? snapshot.title ?? "",
-            source: "shopify",
-            webhookId,
-            changes,
-          });
+            source: "app",
+            createdAt: { $gte: new Date(Date.now() - 60_000) },
+          }).sort({ createdAt: -1 });
+
+          const isEcho = recentAppLog
+            ? changesAreIdentical(changes, recentAppLog.changes)
+            : false;
+
+          if (!isEcho) {
+            await ProductLog.create({
+              shopId: shop,
+              shopifyProductId,
+              productId: String(payload.id),
+              productTitle: payload.title ?? snapshot.title ?? "",
+              source: "shopify",
+              webhookId,
+              changes,
+            });
+          }
         }
 
         await Product.updateOne(
